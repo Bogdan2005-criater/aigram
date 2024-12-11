@@ -1,255 +1,269 @@
-### Варианты задач на основе изученного материала:
+Модернизация задач с добавлением работы с API с использованием **Flask** предполагает создание серверной части для обработки данных, получаемых от бота, а также добавление API для обработки заказов и отчетов.
 
-#### **Задача 1: Бот для заказа доставки пиццы**
-Пользователь должен:
-1. Выбрать размер пиццы.
-2. Указать количество.
-3. Ввести адрес доставки.
-4. После ввода адреса бот отправляет меню (в виде медиа-группы с картинками и описанием), чтобы пользователь мог выбрать дополнительные блюда.
+Предлагаю следующие шаги для улучшения задачи:
 
----
+1. **Создание API на Flask** для обработки запросов от бота.
+2. **Интеграция с API**: Бот будет отправлять данные (например, заказ пиццы или отчет о проекте) на сервер Flask через HTTP-запросы.
+3. **Использование базы данных** (например, SQLite или PostgreSQL) для хранения информации о заказах или отчетах.
 
-#### **Задача 2: Бот для создания отчёта**
-Бот собирает от пользователя:
-1. Название проекта.
-2. Краткое описание проекта.
-3. Документ с подробным описанием (PDF или Word файл).  
-После загрузки файла бот отправляет всё это одним сообщением, включая сам файл и собранные данные, используя `MediaGroup`.
+### Задача 1: Бот для заказа доставки пиццы с использованием Flask API
 
----
+#### Описание:
+Пользователь заказывает пиццу через бота, и данные о заказе отправляются на сервер Flask через API для дальнейшей обработки и подтверждения.
 
-### Решение задачи №2 (пример):
+#### Шаги реализации:
 
-#### **Постановка задачи:**
-Создать бота, который:
-1. Спрашивает название проекта.
-2. Запрашивает краткое описание проекта.
-3. Просит загрузить документ с подробным описанием.  
-После этого бот отправляет ответное сообщение в формате `MediaGroup`, состоящее из текстового описания и загруженного файла.
+1. **API для обработки заказов пиццы (Flask)**: Flask-сервер будет получать информацию о заказе (размер пиццы, количество и адрес) через POST-запросы.
+2. **Telegram-бот**: Бот будет отправлять запросы на API Flask, чтобы создать заказ.
 
 ---
 
-#### **Реализация:**
+#### 1. Создание API с использованием Flask
+
+Пример кода для создания API, который будет принимать данные о заказе пиццы.
 
 ```python
+from flask import Flask, request, jsonify
+from datetime import datetime
+
+app = Flask(__name__)
+
+# Временное хранилище для заказов (можно заменить на базу данных)
+orders = []
+
+@app.route('/api/create_order', methods=['POST'])
+def create_order():
+    data = request.json
+    if not all(key in data for key in ('size', 'quantity', 'address')):
+        return jsonify({"error": "Missing required fields"}), 400
+    
+    order = {
+        'size': data['size'],
+        'quantity': data['quantity'],
+        'address': data['address'],
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    }
+    
+    # Добавление заказа в хранилище
+    orders.append(order)
+    return jsonify({"message": "Order created successfully", "order": order}), 201
+
+@app.route('/api/orders', methods=['GET'])
+def get_orders():
+    return jsonify(orders)
+
+if __name__ == '__main__':
+    app.run(debug=True)
+```
+
+**Объяснение:**
+- `/api/create_order`: Принимает POST-запрос с данными о заказе в формате JSON.
+- `/api/orders`: Возвращает все заказы, сделанные через API.
+
+---
+
+#### 2. Интеграция Telegram-бота с API Flask
+
+Теперь, давайте изменим код Telegram-бота для того, чтобы он отправлял данные на сервер Flask.
+
+Пример кода для бота:
+
+```python
+import requests
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import InputFile, MediaGroup
+from aiogram.types import MediaGroup
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.utils import executor
 
-# Инициализация бота
 API_TOKEN = 'ВАШ_ТОКЕН'
 bot = Bot(token=API_TOKEN)
-storage = MemoryStorage()
-dp = Dispatcher(bot, storage=storage)
+dp = Dispatcher(bot, storage=MemoryStorage())
 
-# Состояния бота
+class PizzaOrder(StatesGroup):
+    waiting_for_size = State()
+    waiting_for_quantity = State()
+    waiting_for_address = State()
+
+API_URL = "http://localhost:5000/api/create_order"  # URL Flask API
+
+@dp.message_handler(commands='start')
+async def start(message: types.Message):
+    await message.answer("Привет! Выберите размер пиццы: Маленькая, Средняя, Большая.")
+    await PizzaOrder.waiting_for_size.set()
+
+@dp.message_handler(state=PizzaOrder.waiting_for_size)
+async def get_size(message: types.Message, state: FSMContext):
+    await state.update_data(size=message.text)
+    await message.answer("Введите количество пицц.")
+    await PizzaOrder.waiting_for_quantity.set()
+
+@dp.message_handler(state=PizzaOrder.waiting_for_quantity)
+async def get_quantity(message: types.Message, state: FSMContext):
+    await state.update_data(quantity=message.text)
+    await message.answer("Введите адрес доставки.")
+    await PizzaOrder.waiting_for_address.set()
+
+@dp.message_handler(state=PizzaOrder.waiting_for_address)
+async def get_address(message: types.Message, state: FSMContext):
+    await state.update_data(address=message.text)
+    data = await state.get_data()
+
+    # Отправка данных на API Flask
+    response = requests.post(API_URL, json=data)
+
+    if response.status_code == 201:
+        await message.answer(f"Ваш заказ принят!\nРазмер: {data['size']}\nКоличество: {data['quantity']}\nАдрес: {data['address']}")
+    else:
+        await message.answer("Произошла ошибка при обработке вашего заказа.")
+
+    await state.finish()
+
+if __name__ == '__main__':
+    executor.start_polling(dp, skip_updates=True)
+```
+
+**Объяснение кода:**
+- В этом коде бот поочередно запрашивает у пользователя размер пиццы, количество и адрес доставки.
+- После того как все данные собраны, бот отправляет POST-запрос на API Flask с данными о заказе.
+- В случае успешной отправки запроса (статус 201) бот информирует пользователя о принятии заказа.
+
+---
+
+### Задача 2: Бот для создания отчёта с использованием Flask API
+
+#### Описание:
+Пользователь создает отчет, загружая документ и вводя название и описание. Эти данные отправляются на сервер Flask через API для сохранения.
+
+#### Шаги реализации:
+
+1. **API для обработки отчетов (Flask)**: Flask-сервер будет получать данные о проекте и загрузки файлов через POST-запросы.
+2. **Telegram-бот**: Бот будет отправлять запросы на сервер Flask с данными о проекте и документом.
+
+---
+
+#### 1. Создание API для обработки отчетов
+
+```python
+from flask import Flask, request, jsonify
+import os
+from werkzeug.utils import secure_filename
+
+app = Flask(__name__)
+
+UPLOAD_FOLDER = 'uploads/'
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+
+# Временное хранилище для отчетов
+reports = []
+
+# Убедимся, что директория существует
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+@app.route('/api/create_report', methods=['POST'])
+def create_report():
+    data = request.form
+    file = request.files.get('document')
+
+    if not data.get('name') or not data.get('description') or not file:
+        return jsonify({"error": "Missing required fields"}), 400
+
+    # Сохраняем файл
+    filename = secure_filename(file.filename)
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    file.save(filepath)
+
+    report = {
+        'name': data['name'],
+        'description': data['description'],
+        'document': filepath
+    }
+
+    reports.append(report)
+
+    return jsonify({"message": "Report created successfully", "report": report}), 201
+
+if __name__ == '__main__':
+    app.run(debug=True)
+```
+
+**Объяснение:**
+- `/api/create_report`: Принимает POST-запрос с полями `name`, `description` и документом.
+- Сохраняет загруженный файл на сервере и добавляет данные в отчет.
+
+---
+
+#### 2. Интеграция Telegram-бота с API Flask
+
+Теперь давайте интегрируем бота с API для создания отчетов.
+
+```python
+import requests
+from aiogram import Bot, Dispatcher, types
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.utils import executor
+
+API_TOKEN = 'ВАШ_ТОКЕН'
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher(bot, storage=MemoryStorage())
+
 class ProjectReport(StatesGroup):
     waiting_for_name = State()
     waiting_for_description = State()
     waiting_for_document = State()
 
-# Хэндлер команды /start
+API_URL = "http://localhost:5000/api/create_report"  # URL Flask API
+
 @dp.message_handler(commands='start')
 async def start(message: types.Message):
-    await message.answer("Привет! Давайте начнем с названия проекта.")
+    await message.answer("Привет! Напишите название вашего проекта.")
     await ProjectReport.waiting_for_name.set()
 
-# Хэндлер получения названия проекта
 @dp.message_handler(state=ProjectReport.waiting_for_name)
 async def get_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text)
-    await message.answer("Отлично! Теперь напишите краткое описание проекта.")
+    await message.answer("Теперь напишите краткое описание проекта.")
     await ProjectReport.waiting_for_description.set()
 
-# Хэндлер получения описания проекта
 @dp.message_handler(state=ProjectReport.waiting_for_description)
 async def get_description(message: types.Message, state: FSMContext):
     await state.update_data(description=message.text)
     await message.answer("Загрузите документ с подробным описанием проекта.")
     await ProjectReport.waiting_for_document.set()
 
-# Хэндлер получения документа
 @dp.message_handler(content_types=types.ContentType.DOCUMENT, state=ProjectReport.waiting_for_document)
 async def get_document(message: types.Message, state: FSMContext):
-    document = message.document
-    await state.update_data(document=document.file_id)
+    file = await bot.get_file(message.document.file_id)
+    file_url = f'https://api.telegram.org/file/bot{API_TOKEN}/{file.file_path}'
 
-    # Получение всех данных из состояния
     data = await state.get_data()
 
-    # Формирование MediaGroup
-    media = MediaGroup()
-    media.attach_text(f"Название проекта: {data['name']}\n"
-                      f"Описание: {data['description']}")
-    media.attach_document(document.file_id, caption="Подробный документ")
+    # Отправка данных на Flask API
+    files = {'document': (file.file_path, requests.get(file_url).content)}
+    response =
 
-    # Отправка MediaGroup
-    await bot.send_media_group(chat_id=message.chat.id, media=media)
+ requests.post(API_URL, data={'name': data['name'], 'description': data['description']}, files=files)
+
+    if response.status_code == 201:
+        await message.answer("Отчёт успешно создан!")
+    else:
+        await message.answer("Произошла ошибка при создании отчёта.")
 
     await state.finish()
 
-# Запуск бота
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
 ```
 
----
-
-#### **Пояснение к решению:**
-1. **Состояния:**
-   - Созданы три состояния для последовательного запроса данных.
-   - В каждом состоянии бот ожидает определённый тип информации от пользователя.
-
-2. **MediaGroup:**
-   - После сбора данных бот формирует `MediaGroup`, включающий текстовую часть (название и описание проекта) и документ, загруженный пользователем.
-
-3. **Безопасность:**
-   - `FSMContext` используется для хранения промежуточных данных, что позволяет обрабатывать несколько пользователей одновременно.
-
-4. **Отправка документа:**
-   - Документ отправляется через `attach_document` в `MediaGroup`.
-
-
-Вот подробное объяснение всех элементов кода:
-
-### **Импорты**
-```python
-from aiogram import Bot, Dispatcher, types
-from aiogram.types import InputFile, MediaGroup
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.dispatcher import FSMContext
-from aiogram.utils import executor
-```
-- **aiogram** — библиотека для создания Telegram-ботов.
-- **Bot** — объект бота, через который осуществляется взаимодействие с Telegram API.
-- **Dispatcher** — объект для управления хэндлерами (обработчиками событий).
-- **types** — модуль, содержащий различные Telegram-объекты, например `Message`, `InputFile`, и др.
-- **InputFile** — используется для отправки файлов в Telegram.
-- **MediaGroup** — объект для группировки сообщений с мультимедиа (тексты, документы, фото и т.д.).
-- **MemoryStorage** — хранилище данных на основе памяти, используется для хранения состояний пользователя.
-- **State, StatesGroup** — используются для реализации конечных автоматов.
-- **FSMContext** — объект, обеспечивающий работу конечного автомата и доступ к данным состояния.
-- **executor** — модуль для запуска бота.
+**Объяснение кода:**
+- Бот собирает название, описание и документ.
+- После получения документа, бот отправляет его вместе с другими данными на сервер Flask через POST-запрос.
 
 ---
 
-### **Инициализация**
-```python
-API_TOKEN = 'ВАШ_ТОКЕН'
-bot = Bot(token=API_TOKEN)
-storage = MemoryStorage()
-dp = Dispatcher(bot, storage=storage)
-```
-- **API_TOKEN** — токен вашего бота, который можно получить у [@BotFather](https://t.me/botfather).
-- **Bot** — создаёт объект бота с указанным токеном.
-- **MemoryStorage** — создаёт временное хранилище для хранения данных о пользователях.
-- **Dispatcher** — объект для управления взаимодействием между ботом и пользователем; принимает бот и хранилище.
+### Заключение
 
----
-
-### **Создание состояний**
-```python
-class ProjectReport(StatesGroup):
-    waiting_for_name = State()
-    waiting_for_description = State()
-    waiting_for_document = State()
-```
-- **StatesGroup** — класс, который объединяет состояния.
-- **waiting_for_name, waiting_for_description, waiting_for_document** — состояния, которые последовательно используются ботом для выполнения задачи. Например:
-  - `waiting_for_name` — бот ожидает от пользователя ввода названия проекта.
-  - `waiting_for_description` — бот ожидает краткое описание проекта.
-  - `waiting_for_document` — бот ожидает загрузки документа.
-
----
-
-### **Хэндлер команды /start**
-```python
-@dp.message_handler(commands='start')
-async def start(message: types.Message):
-    await message.answer("Привет! Давайте начнем с названия проекта.")
-    await ProjectReport.waiting_for_name.set()
-```
-- **@dp.message_handler(commands='start')** — хэндлер для обработки команды `/start`.
-- **message: types.Message** — объект, содержащий сообщение пользователя.
-- **message.answer()** — отправка текстового сообщения в ответ.
-- **await ProjectReport.waiting_for_name.set()** — перевод бота в состояние `waiting_for_name`.
-
----
-
-### **Хэндлер получения названия проекта**
-```python
-@dp.message_handler(state=ProjectReport.waiting_for_name)
-async def get_name(message: types.Message, state: FSMContext):
-    await state.update_data(name=message.text)
-    await message.answer("Отлично! Теперь напишите краткое описание проекта.")
-    await ProjectReport.waiting_for_description.set()
-```
-- **@dp.message_handler(state=ProjectReport.waiting_for_name)** — хэндлер срабатывает только в состоянии `waiting_for_name`.
-- **state.update_data(name=message.text)** — сохраняет введённое пользователем название проекта в хранилище.
-- **message.answer()** — отправляет сообщение с просьбой ввести описание.
-- **await ProjectReport.waiting_for_description.set()** — переключает состояние на `waiting_for_description`.
-
----
-
-### **Хэндлер получения описания проекта**
-```python
-@dp.message_handler(state=ProjectReport.waiting_for_description)
-async def get_description(message: types.Message, state: FSMContext):
-    await state.update_data(description=message.text)
-    await message.answer("Загрузите документ с подробным описанием проекта.")
-    await ProjectReport.waiting_for_document.set()
-```
-- Аналогично предыдущему хэндлеру:
-  - Сохраняет описание проекта.
-  - Переключает состояние на `waiting_for_document`.
-
----
-
-### **Хэндлер получения документа**
-```python
-@dp.message_handler(content_types=types.ContentType.DOCUMENT, state=ProjectReport.waiting_for_document)
-async def get_document(message: types.Message, state: FSMContext):
-    document = message.document
-    await state.update_data(document=document.file_id)
-
-    # Получение всех данных из состояния
-    data = await state.get_data()
-
-    # Формирование MediaGroup
-    media = MediaGroup()
-    media.attach_text(f"Название проекта: {data['name']}\n"
-                      f"Описание: {data['description']}")
-    media.attach_document(document.file_id, caption="Подробный документ")
-
-    # Отправка MediaGroup
-    await bot.send_media_group(chat_id=message.chat.id, media=media)
-
-    await state.finish()
-```
-- **content_types=types.ContentType.DOCUMENT** — хэндлер активируется только при получении документа.
-- **document = message.document** — сохраняет документ, который отправил пользователь.
-- **state.update_data(document=document.file_id)** — сохраняет ID документа в хранилище.
-- **data = await state.get_data()** — извлекает все данные, которые были сохранены в текущей сессии.
-- **MediaGroup()** — создаёт группу мультимедиа, чтобы отправить несколько объектов одним сообщением.
-  - `attach_text()` — добавляет текст в группу.
-  - `attach_document()` — добавляет документ в группу.
-- **bot.send_media_group()** — отправляет сообщение с группой мультимедиа.
-- **state.finish()** — завершает работу конечного автомата, очищает данные.
-
----
-
-### **Запуск бота**
-```python
-if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True)
-```
-- **executor.start_polling()** — запускает бота в режиме получения обновлений от Telegram.
-- **skip_updates=True** — пропускает необработанные сообщения, если бот был отключён.
-
----
-
-Этот код организует работу бота так, чтобы пользователи последовательно вводили данные, а бот их обрабатывал и сохранял, избегая конфликтов между разными пользователями.
+В этой модернизированной версии задания мы добавили серверную часть с использованием **Flask API**. Бот теперь отправляет данные о заказах пиццы или отчетах на сервер Flask для обработки. Это позволяет разделить логику взаимодействия с пользователем и хранение/обработку данных, улучшая масштабируемость приложения.
